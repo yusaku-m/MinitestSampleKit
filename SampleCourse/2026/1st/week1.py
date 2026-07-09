@@ -178,4 +178,4 @@ def Exercises(seed=0):
 
 def MiniTest(seed=0):
     """小テスト用: 実施日などをシードにして1問だけ出題する。"""
-    return [Question1(seed, random_choice_num=5)]
+    return [Question1(seed, random_choice_num=6)]
