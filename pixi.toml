@@ -1,0 +1,28 @@
+[workspace]
+authors = ["Sample Kit"]
+channels = ["conda-forge"]
+name = "sample_kit"
+version = "0.1.0"
+platforms = ["win-64", "linux-64"]
+
+[system-requirements]
+
+[tasks]
+gui = "python sample_gui.py"
+
+[dependencies]
+opencv = ">=4.11.0,<5"
+pytorch = "*"
+torchvision = ">=0.21.0,<0.22"
+matplotlib = ">=3.10.1,<4"
+numpy = ">=2.2.4,<3"
+svgwrite = ">=1.4.3,<2"
+svglib = ">=1.5.1,<2"
+reportlab = ">=4.4.1,<5"
+sympy = ">=1.14.0,<2"
+openpyxl = ">=3.1.5,<4"
+qrcode = ">=7.0"
+pillow = ">=10.0"
+pandas = "*"
+pyautogui = ">=0.9.54,<0.10"
+pdfrw = ">=0.4,<0.5"
