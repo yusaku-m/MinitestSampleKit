@@ -74,7 +74,7 @@ class SampleGradingApp:
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(pad, 0))
 
         nb = ttk.Notebook(self.root)
-        nb.pack(fill="both", expand=True, padx=pad, pady=pad)
+        nb.pack(fill="x", padx=pad, pady=pad)
 
         # --- 週次タブ ---
         weekly = ttk.Frame(nb)
