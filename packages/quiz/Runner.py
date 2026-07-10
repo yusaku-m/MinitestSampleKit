@@ -256,6 +256,20 @@ def seed_for(week: WeekEntry) -> int:
     return int(week.date.strftime("%Y%m%d"))
 
 
+def retry_dir_for(
+    tpath: str, course: Course, week: WeekEntry, student_number: int, attempt: int = 1,
+) -> str:
+    """個別再テストの作業ディレクトリ …/retry/{番号}_{回数} を返す（scan/result の親）。"""
+    return os.path.join(
+        minitest_dir(tpath, course, week), "retry", f"{student_number:02d}_{attempt:02d}"
+    )
+
+
+def retry_batch_result_dir_for(tpath: str, course: Course, week: WeekEntry) -> str:
+    """QR一括採点の結果ディレクトリ …/retry_batch_result を返す（週ごと、scan は共有）。"""
+    return os.path.join(minitest_dir(tpath, course, week), "retry_batch_result")
+
+
 def retry_seed_for(student_number: int, attempt: int = 1) -> int:
     """再テスト用のシード。出席番号と受験回数から個人ごとに一意のシードを作る。
 
@@ -403,9 +417,7 @@ def generate_retry_pdf(
     # タイトル文字列が重なる（Sheet はタイトルを折り返さず1行で描画するため）。
     # 再テストは対象科目が自明なので科目名は省き、週・回のみで短く保つ。
     title = f"{weekstr_for(course, week)}　{week.weektitle}　再テスト（{attempt}回目）"
-    retry_dir = os.path.join(
-        minitest_dir(tpath, course, week), "retry", f"{student_number:02d}_{attempt:02d}"
-    )
+    retry_dir = retry_dir_for(tpath, course, week, student_number, attempt)
     os.makedirs(os.path.join(retry_dir, "scan"), exist_ok=True)
     out = os.path.join(retry_dir, f"retry_{student_number:02d}_{attempt:02d}")
 
@@ -543,7 +555,6 @@ def _grade_scans(
             sh.get_format_answers(plus_minus_nets, number_nets, device, result_dir=result_dir)
             ai_ran = True
 
-        sh.save()
         sh.scoring()
         log(f"  出席番号={sh.student_number} 得点={sh.score}")
 
@@ -609,9 +620,7 @@ def grade_retry(
     questions = wmod.MiniTest(seed=seed)
     metadata = _retry_metadata(course, week, student_number, seed)
 
-    retry_dir = os.path.join(
-        minitest_dir(tpath, course, week), "retry", f"{student_number:02d}_{attempt:02d}"
-    )
+    retry_dir = retry_dir_for(tpath, course, week, student_number, attempt)
     scan_dir = os.path.join(retry_dir, "scan")
     result_dir = os.path.join(retry_dir, "result")
     return _grade_scans(
@@ -751,7 +760,7 @@ def grade_retry_batch(
         title = f"{weekstr_for(course, week)}　{week.weektitle}　再テスト"
         metadata = _retry_metadata(course, week, student_number, seed, page_count=len(img_files))
 
-        result_dir = os.path.join(minitest_dir(tpath, course, week), "retry_batch_result")
+        result_dir = retry_batch_result_dir_for(tpath, course, week)
         os.makedirs(result_dir, exist_ok=True)
 
         log(f"[{i + 1}/{total}] 採点: 出席番号{student_number:02d} 週{weeknum} seed={seed}")
@@ -767,7 +776,6 @@ def grade_retry_batch(
                 log(f"  AI 推論（device={device}）")
                 plus_minus_nets, number_nets = load_ai_models(device, log=log)
             sh.get_format_answers(plus_minus_nets, number_nets, device, result_dir=result_dir)
-            sh.save()
             sh.scoring()
         except Exception as e:  # noqa: BLE001 — 他の受験者の採点を続行するため広く捕捉
             import traceback
@@ -909,3 +917,59 @@ def export_return_pdfs(
         sh.export_return_pdf(out, explanation_pdf=explanation_pdf)
 
     return result_dir
+
+
+def export_retry_return_pdfs(
+    course: Course, sheets, tpath: Optional[str] = None, log: LogFn = print,
+) -> List[str]:
+    """再テストの返却 PDF を生成する（grade_retry / grade_retry_batch どちらの結果にも使える）。
+
+    週・出席番号・受験回を引数で受け取らず、各 Sheet.metadata（QRメタデータ、
+    _retry_metadata 参照）から復元する。そのため個別再テスト・QR一括採点のどちらで
+    採点した sheets を渡しても、そのまま同じ関数で返却 PDF を生成できる。
+    出力先は generate_retry_pdf/grade_retry と同じ retry/{番号}_{回数}/result/。
+
+    戻り値は生成した result ディレクトリの一覧（重複を除く）。
+    """
+    if tpath is None:
+        tpath = target_path(course)
+    if not sheets:
+        log("採点済みシートがありません。先に再テスト採点を実行してください。")
+        return []
+
+    result_dirs: List[str] = []
+    explanation_cache: dict = {}
+
+    for sh in sheets:
+        meta = sh.metadata
+        if not meta:
+            log(f"⚠ 番号{sh.student_number} は再テストのメタデータがないためスキップ（通常の小テストでは使えません）")
+            continue
+
+        weeknum = meta["w"]
+        division = "1st" if meta.get("d", 0) == 0 else "2nd"
+        seed = meta["seed"]
+        attempt = seed % 100
+
+        result_dir = os.path.join(
+            tpath, "minitest", division, f"week{weeknum:02d}",
+            "retry", f"{sh.student_number:02d}_{attempt:02d}", "result",
+        )
+        os.makedirs(result_dir, exist_ok=True)
+
+        explanation_pdf = explanation_cache.get(seed)
+        if explanation_pdf is None:
+            explanation_pdf = os.path.join(result_dir, f"explanation_seed{seed}.pdf")
+            if not os.path.exists(explanation_pdf):
+                log(f"共通解説 PDF を生成: {os.path.basename(explanation_pdf)}")
+                sh.export_explanation_pdf(explanation_pdf[:-4])
+            explanation_cache[seed] = explanation_pdf
+
+        out = os.path.join(result_dir, f"{sh.student_number:02d}_{attempt:02d}")
+        log(f"返却 PDF: 番号{sh.student_number} 週{weeknum} 受験{attempt}回目（{sh.score} 点）")
+        sh.export_return_pdf(out, explanation_pdf=explanation_pdf)
+
+        if result_dir not in result_dirs:
+            result_dirs.append(result_dir)
+
+    return result_dirs

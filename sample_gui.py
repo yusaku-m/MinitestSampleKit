@@ -23,6 +23,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import packages.quiz.Runner as R
+from packages.quiz.CorrectionUI import CorrectionWindow
 
 
 class _TeeQueue:
@@ -42,12 +43,14 @@ class SampleGradingApp:
         self.root = root
         self.root.title("ランダム問題生成 × 自動採点 サンプルGUI")
         self.log_queue: "queue.Queue[str]" = queue.Queue()
+        self.preview_queue: "queue.Queue[tuple]" = queue.Queue()
         self.courses: list[R.Course] = []
         self.busy = False
 
         self._build_widgets()
         self._reload_courses()
         self.root.after(100, self._drain_log_queue)
+        self.root.after(100, self._drain_preview_queue)
 
     # ------------------------------------------------------------------ #
     # UI構築
@@ -84,6 +87,7 @@ class SampleGradingApp:
         ttk.Button(btns, text="演習PDF生成", command=self._on_exercises).pack(side="left", padx=pad)
         ttk.Button(btns, text="小テストPDF生成", command=self._on_minitest).pack(side="left", padx=pad)
         ttk.Button(btns, text="採点", command=self._on_grade).pack(side="left", padx=pad)
+        ttk.Button(btns, text="予測修正", command=self._on_correction).pack(side="left", padx=pad)
         ttk.Button(btns, text="返却PDF生成", command=self._on_export).pack(side="left", padx=pad)
 
         # --- 再テストタブ ---
@@ -100,6 +104,25 @@ class SampleGradingApp:
         ttk.Button(rtop, text="再テストPDF生成", command=self._on_retry_generate).pack(side="left", padx=pad)
         ttk.Button(rtop, text="再テスト採点", command=self._on_retry_grade).pack(side="left", padx=pad)
         ttk.Button(rtop, text="QR一括採点（フォルダ自動振分）", command=self._on_retry_grade_batch).pack(side="left", padx=pad)
+        ttk.Button(rtop, text="予測修正", command=self._on_retry_correction).pack(side="left", padx=pad)
+        ttk.Button(rtop, text="返却PDF生成", command=self._on_retry_export).pack(side="left", padx=pad)
+
+        # 採点結果のデモ表示（採点中に image_callback 経由で流れてくる画像をその都度プレビュー）
+        preview = ttk.Frame(retry)
+        preview.pack(fill="x", pady=(0, pad))
+        scored_box = ttk.LabelFrame(preview, text="採点結果プレビュー")
+        scored_box.pack(side="left", padx=pad, fill="both", expand=True)
+        self.scored_caption_var = tk.StringVar(value="（未採点）")
+        ttk.Label(scored_box, textvariable=self.scored_caption_var).pack(anchor="w")
+        self.scored_image_label = ttk.Label(scored_box)
+        self.scored_image_label.pack()
+
+        digits_box = ttk.LabelFrame(preview, text="AI入力プレビュー（白黒）")
+        digits_box.pack(side="left", padx=pad, fill="both", expand=True)
+        self.digits_caption_var = tk.StringVar(value="（未採点）")
+        ttk.Label(digits_box, textvariable=self.digits_caption_var).pack(anchor="w")
+        self.digits_image_label = ttk.Label(digits_box)
+        self.digits_image_label.pack()
 
         # --- ログ ---
         log_frame = ttk.Frame(self.root)
@@ -153,6 +176,40 @@ class SampleGradingApp:
         self.root.after(100, self._drain_log_queue)
 
     # ------------------------------------------------------------------ #
+    # 採点結果のデモ表示（image_callback → プレビュー欄）
+    # ------------------------------------------------------------------ #
+    def _on_preview_image(self, kind: str, caption: str, img) -> None:
+        """R.grade_retry* に渡す image_callback。採点スレッドから呼ばれるためキュー経由でGUIへ渡す。"""
+        self.preview_queue.put((kind, caption, img))
+
+    def _drain_preview_queue(self):
+        try:
+            while True:
+                kind, caption, img = self.preview_queue.get_nowait()
+                self._show_preview(kind, caption, img)
+        except queue.Empty:
+            pass
+        self.root.after(100, self._drain_preview_queue)
+
+    def _show_preview(self, kind: str, caption: str, img) -> None:
+        import cv2
+        from PIL import Image as PILImage, ImageTk
+
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pil_img = PILImage.fromarray(rgb)
+        pil_img.thumbnail((320, 420))
+        photo = ImageTk.PhotoImage(pil_img)
+
+        if kind == "scored":
+            self.scored_caption_var.set(caption)
+            self.scored_image_label.configure(image=photo)
+            self.scored_image_label.image = photo  # 参照保持（GC対策）
+        elif kind == "digits":
+            self.digits_caption_var.set(caption)
+            self.digits_image_label.configure(image=photo)
+            self.digits_image_label.image = photo  # 参照保持（GC対策）
+
+    # ------------------------------------------------------------------ #
     # 実行制御（バックグラウンドスレッド）
     # ------------------------------------------------------------------ #
     def _run_in_thread(self, fn, *args):
@@ -201,6 +258,14 @@ class SampleGradingApp:
 
         self._run_in_thread(task)
 
+    def _on_correction(self):
+        course, week = self._current_course(), self._current_week()
+        wdir = R.minitest_dir(R.target_path(course), course, week)
+        self._open_correction(
+            os.path.join(wdir, "result"), [os.path.join(wdir, "scan")],
+            title=f"予測修正 — {R.weekstr_for(course, week)} {week.weektitle}",
+        )
+
     def _on_export(self):
         course, week = self._current_course(), self._current_week()
 
@@ -212,6 +277,11 @@ class SampleGradingApp:
             R.export_return_pdfs(course, week, sheets, log=self._log)
 
         self._run_in_thread(task)
+
+    def _open_correction(self, result_dir: str, scan_dirs: list, title: str) -> None:
+        """予測修正ウィンドウを開く（生成に失敗した場合は自壊するので ok を見るだけでよい）。"""
+        CorrectionWindow(self.root, result_dir, scan_dirs=scan_dirs, title=title,
+                          ui_scale=1.0, log=self._log)
 
     # ------------------------------------------------------------------ #
     # 個別再テスト タブの処理
@@ -236,9 +306,17 @@ class SampleGradingApp:
             return
 
         def task():
-            sheets = R.grade_retry(course, week, student, attempt, log=self._log)
+            sheets = R.grade_retry(
+                course, week, student, attempt, log=self._log,
+                image_callback=self._on_preview_image,
+            )
+            self._last_retry_sheets = sheets
             if sheets:
                 self._log(f"再テスト採点結果: {sheets[0].score} 点")
+                retry_dir = R.retry_dir_for(R.target_path(course), course, week, student, attempt)
+                self._last_retry_targets = [
+                    (os.path.join(retry_dir, "result"), [os.path.join(retry_dir, "scan")]),
+                ]
             else:
                 self._log(
                     "採点対象の画像がありません。retry/{番号}_{回数}/scan に"
@@ -251,16 +329,53 @@ class SampleGradingApp:
         course = self._current_course()
 
         def task():
-            sheets, failed = R.grade_retry_batch(course, log=self._log)
+            sheets, failed = R.grade_retry_batch(
+                course, log=self._log, image_callback=self._on_preview_image,
+            )
+            self._last_retry_sheets = sheets
             if sheets:
                 self._log("--- QR一括採点結果 ---")
                 for sh in sorted(sheets, key=lambda s: s.student_number):
                     self._log(f"  出席番号{sh.student_number:02d}: {sh.score} 点")
+                tpath = R.target_path(course)
+                scan_dirs = [R.retry_batch_scan_dir(tpath)]
+                seen_weeks = set()
+                targets = []
+                for sh in sheets:
+                    meta = sh.metadata or {}
+                    key = (meta.get("w"), meta.get("d"))
+                    if key in seen_weeks or key[0] is None:
+                        continue
+                    seen_weeks.add(key)
+                    division = "1st" if meta.get("d", 0) == 0 else "2nd"
+                    week = course.week(meta["w"], division)
+                    targets.append((R.retry_batch_result_dir_for(tpath, course, week), scan_dirs))
+                self._last_retry_targets = targets
             if not sheets and not failed:
                 self._log(
                     "採点対象の画像がありません。output/{科目}/{年度}/minitest/retry_scan に"
                     " *.jpg を置いてから再実行してください（学生ごとの仕分けは不要）。"
                 )
+
+        self._run_in_thread(task)
+
+    def _on_retry_correction(self):
+        targets = getattr(self, "_last_retry_targets", None)
+        if not targets:
+            self._log("先に「再テスト採点」または「QR一括採点」を実行してください。")
+            return
+        for result_dir, scan_dirs in targets:
+            self._open_correction(result_dir, scan_dirs, title=f"予測修正 — {result_dir}")
+
+    def _on_retry_export(self):
+        course = self._current_course()
+
+        def task():
+            sheets = getattr(self, "_last_retry_sheets", None)
+            if not sheets:
+                self._log("先に「再テスト採点」または「QR一括採点」を実行してください。")
+                return
+            R.export_retry_return_pdfs(course, sheets, log=self._log)
 
         self._run_in_thread(task)
 
