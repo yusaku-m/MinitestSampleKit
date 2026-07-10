@@ -99,6 +99,7 @@ class SampleGradingApp:
         ttk.Entry(rtop, textvariable=self.attempt_var, width=6).pack(side="left", padx=pad)
         ttk.Button(rtop, text="再テストPDF生成", command=self._on_retry_generate).pack(side="left", padx=pad)
         ttk.Button(rtop, text="再テスト採点", command=self._on_retry_grade).pack(side="left", padx=pad)
+        ttk.Button(rtop, text="QR一括採点（フォルダ自動振分）", command=self._on_retry_grade_batch).pack(side="left", padx=pad)
 
         # --- ログ ---
         log_frame = ttk.Frame(self.root)
@@ -242,6 +243,23 @@ class SampleGradingApp:
                 self._log(
                     "採点対象の画像がありません。retry/{番号}_{回数}/scan に"
                     " *.jpg を置いてから再実行してください。"
+                )
+
+        self._run_in_thread(task)
+
+    def _on_retry_grade_batch(self):
+        course = self._current_course()
+
+        def task():
+            sheets, failed = R.grade_retry_batch(course, log=self._log)
+            if sheets:
+                self._log("--- QR一括採点結果 ---")
+                for sh in sorted(sheets, key=lambda s: s.student_number):
+                    self._log(f"  出席番号{sh.student_number:02d}: {sh.score} 点")
+            if not sheets and not failed:
+                self._log(
+                    "採点対象の画像がありません。output/{科目}/{年度}/minitest/retry_scan に"
+                    " *.jpg を置いてから再実行してください（学生ごとの仕分けは不要）。"
                 )
 
         self._run_in_thread(task)

@@ -265,6 +265,23 @@ def retry_seed_for(student_number: int, attempt: int = 1) -> int:
     return int(f"{student_number:02d}{attempt:02d}")
 
 
+def _retry_metadata(course: Course, week: WeekEntry, student_number: int, seed: int, page_count: int = 1) -> dict:
+    """再テストPDFのQRに埋め込む/採点時に読み取ったQRから再構築するメタデータ。
+
+    Sheet._draw_qr / Sheet.read_qr は "class:s:w:d:seed:p" の6フィールド固定形式を前提とする
+    （元リポジトリ Grading と同じ dict キー契約をそのまま利用）。元リポジトリの "d" は再/追の
+    区分だが、本サンプルには再テストしかないため学期（前期=0/後期=1）に読み替えて使う。
+    """
+    return {
+        "class": course.Class,
+        "s": student_number,
+        "w": week.weeknum,
+        "d": 0 if week.division == "1st" else 1,
+        "seed": seed,
+        "p": page_count,
+    }
+
+
 def weekstr_for(course: Course, week: WeekEntry) -> str:
     return f"{week.term}{week.weeknum}週"
 
@@ -371,6 +388,10 @@ def generate_retry_pdf(
     小テストと同じ問題定義（weekN.py）を使うが、シードを実施日ではなく
     「出席番号×受験回数」にすることで、本人が一度見た問題とは別の数値・条件の
     問題を毎回作れる（再テストのたびに構造は同じでも本質的に別問題になる）。
+
+    氏名欄に出席番号を事前印字し、QRコード（出席番号・週・seed・ページ数）を埋め込む。
+    採点時は grade_retry_batch がこのQRを読み取るだけで学生・週・受験回を自動判定できる
+    ため、スキャンをあらかじめ学生ごとに仕分けておく必要がない。
     """
     if tpath is None:
         tpath = target_path(course)
@@ -378,18 +399,25 @@ def generate_retry_pdf(
     seed = retry_seed_for(student_number, attempt)
     wmod = import_week_module(course, week)
     questions = wmod.MiniTest(seed=seed)
-    title = (
-        f"{course.SubjectName}　{weekstr_for(course, week)}　{week.weektitle} "
-        f"再テスト（{attempt}回目）"
-    )
+    # 科目名（COURSE_SUBJECTS）は長くなりがちで、氏名欄横のQR・出席番号欄と
+    # タイトル文字列が重なる（Sheet はタイトルを折り返さず1行で描画するため）。
+    # 再テストは対象科目が自明なので科目名は省き、週・回のみで短く保つ。
+    title = f"{weekstr_for(course, week)}　{week.weektitle}　再テスト（{attempt}回目）"
     retry_dir = os.path.join(
         minitest_dir(tpath, course, week), "retry", f"{student_number:02d}_{attempt:02d}"
     )
     os.makedirs(os.path.join(retry_dir, "scan"), exist_ok=True)
     out = os.path.join(retry_dir, f"retry_{student_number:02d}_{attempt:02d}")
 
-    log(f"再テスト生成: {title}  (seed={seed})")
-    sh = Sheet(title, questions)
+    metadata = _retry_metadata(course, week, student_number, seed)
+    sh = Sheet(title, questions, student_number=student_number, metadata=metadata)
+
+    # 1回目: 仮キャンバスで実ページ数を計測（explanation を除いた、学生が提出する
+    # 解答ページのみのページ数。save しないためディスクには書き出さない）
+    temp = sh.export_pdf(out, save=False, pdf_canvas=None, explanation=False)
+    metadata["p"] = temp.getPageNumber() - 1  # showPage() 呼び出しごとに +1 されるため -1
+
+    log(f"再テスト生成: {title}  (seed={seed}, QRページ数={metadata['p']})")
     sh.export_pdf(out)
     log(f"  → {out}.pdf")
     log(f"  scan フォルダ: {os.path.join(retry_dir, 'scan')}")
@@ -472,9 +500,14 @@ def _digit_montage(sh, cols: int = 12, cell: int = 32):
 
 def _grade_scans(
     scan_dir: str, result_dir: str, title: str, questions, log: LogFn = print,
-    monitor: bool = False, image_callback=None,
+    monitor: bool = False, image_callback=None, metadata: Optional[dict] = None,
 ):
-    """scan_dir 内の *.jpg を採点する共通処理（小テスト・再テストの両方から使う）。"""
+    """scan_dir 内の *.jpg を採点する共通処理（小テスト・再テストの両方から使う）。
+
+    metadata を渡すと（再テストのみ）、生成時に印字したQRが解答欄の四角形として
+    誤検出されないようマスク処理が有効になる（Sheet.get_answerimg 参照）。
+    小テスト（QRなし）では None のままでよい。
+    """
     import torch
 
     Sheet = _sheet_cls()
@@ -492,7 +525,7 @@ def _grade_scans(
     sheets = []
     for i, img in enumerate(files):
         log(f"[{i + 1}/{len(files)}] {os.path.basename(img)}")
-        sh = Sheet(title, questions, monitor=monitor)
+        sh = Sheet(title, questions, monitor=monitor, metadata=metadata)
         sh.path = img
         sh.read()
         sh.rotation()
@@ -564,12 +597,17 @@ def grade_retry(
     tpath: Optional[str] = None, log: LogFn = print,
     monitor: bool = False, image_callback=None,
 ):
-    """特定学生の再テストを採点する（generate_retry_pdf と対になる関数）。"""
+    """特定学生の再テストを採点する（generate_retry_pdf と対になる関数）。
+
+    generate_retry_pdf が印字したのと同じQRメタデータをここでも再構築して渡すことで、
+    QR領域が解答欄として誤検出されるのを防ぐ（Sheet.get_answerimg のマスク処理）。
+    """
     if tpath is None:
         tpath = target_path(course)
     seed = retry_seed_for(student_number, attempt)
     wmod = import_week_module(course, week)
     questions = wmod.MiniTest(seed=seed)
+    metadata = _retry_metadata(course, week, student_number, seed)
 
     retry_dir = os.path.join(
         minitest_dir(tpath, course, week), "retry", f"{student_number:02d}_{attempt:02d}"
@@ -578,8 +616,197 @@ def grade_retry(
     result_dir = os.path.join(retry_dir, "result")
     return _grade_scans(
         scan_dir, result_dir, "再テスト", questions, log=log,
-        monitor=monitor, image_callback=image_callback,
+        monitor=monitor, image_callback=image_callback, metadata=metadata,
     )
+
+
+def retry_batch_scan_dir(tpath: str) -> str:
+    """QR一括採点用の共有スキャン置き場 …/minitest/retry_scan を作成して返す。
+
+    学生・週を問わず、スキャンした画像をここへまとめて置くだけでよい
+    （QRコードから出席番号・週・受験回を自動判定するため、事前の仕分けが不要）。
+    """
+    scan = os.path.join(tpath, "minitest", "retry_scan")
+    os.makedirs(scan, exist_ok=True)
+    return scan
+
+
+def grade_retry_batch(
+    course: Course, tpath: Optional[str] = None, log: LogFn = print,
+    monitor: bool = False, image_callback=None,
+):
+    """共有スキャンフォルダ（retry_batch_scan_dir）内の画像をQRコードで自動判定して採点する。
+
+    generate_retry_pdf が埋め込んだQR（出席番号・週・seed・ページ数）を読み取ることで、
+    学生ごとにスキャンを仕分けたり、GUIで出席番号・受験回数を指定したりする必要がなくなる
+    （元リポジトリ Grading の grading_app.py: grade_retry() と同じ考え方。Excel成績簿転記・
+    SharePoint配布など学校固有の運用は対象外）。
+
+    1件の採点エラーで全体を止めず、失敗は failed に集めて返す（呼び出し側で必ず提示すること）。
+    Returns: (sheets, failed)
+    """
+    import torch
+
+    if tpath is None:
+        tpath = target_path(course)
+    Sheet = _sheet_cls()
+    scan_dir = retry_batch_scan_dir(tpath)
+
+    all_files = sorted(glob.glob(os.path.join(scan_dir, "*.jpg")))
+    log(f"スキャンフォルダ: {scan_dir}")
+    log(f"スキャンファイル: {len(all_files)} 件")
+    failed: List[dict] = []
+    if not all_files:
+        log("スキャンファイルが見つかりません。")
+        return [], failed
+
+    # QR読取（回転補正後に失敗したら回転前の生画像でも試す）
+    page_qr = []
+    for f in all_files:
+        sh_tmp = Sheet("dummy", [], monitor=False)
+        sh_tmp.path = [f]
+        sh_tmp.read()
+        sh_tmp.rotation()
+        qr = sh_tmp.read_qr()
+        if not qr:
+            sh_raw = Sheet("dummy", [], monitor=False)
+            sh_raw.path = [f]
+            sh_raw.read()
+            qr = sh_raw.read_qr()
+            if qr:
+                log(f"QR OK（回転前リトライ）: {os.path.basename(f)}")
+        if qr:
+            log(f"QR OK: 出席番号{qr['s']:02d} 週{qr['w']} seed={qr['seed']} ページ数={qr['p']}")
+        page_qr.append(qr)
+
+    # ページグループ構築: QR は1枚目にしか埋め込まれないため、QR の p（総ページ数）に
+    # 従ってスキャン順で後続の無QR画像を続きページとみなす。続きページのはずの画像に
+    # QR が検出された場合は別答案の1枚目とみなし、続きページとしては扱わない。
+    exam_groups = []
+    used = set()
+    for i, f in enumerate(all_files):
+        qr = page_qr[i]
+        if qr is None:
+            continue
+        page_count = qr.get("p", 1) or 1
+        files = [f]
+        used.add(i)
+        for k in range(1, page_count):
+            j = i + k
+            if j >= len(all_files):
+                log(f"⚠ 続きページ不足: {os.path.basename(f)} の{k+1}/{page_count}枚目が見つかりません")
+                break
+            if page_qr[j] is not None:
+                log(f"⚠ 続きページのはずが QR を検出: {os.path.basename(all_files[j])} "
+                    f"→ 別の答案の1枚目とみなし、続きページとしては扱いません")
+                break
+            files.append(all_files[j])
+            used.add(j)
+            log(f"  続きページ認識: {os.path.basename(all_files[j])} ({k+1}/{page_count}枚目)")
+        exam_groups.append({**qr, "files": files})
+
+    for i, f in enumerate(all_files):
+        if i not in used:
+            log(f"QR読取失敗（手動処理が必要）: {os.path.basename(f)}")
+
+    # 重複スキャン対策: 同一 (出席番号, 週, seed) の QR が複数回検出された場合は
+    # 同じ1枚目を誤って複数回スキャンしたとみなし、2件目以降は無視する
+    seen_keys = set()
+    deduped_groups = []
+    for group in exam_groups:
+        key = (group["s"], group["w"], group["seed"])
+        if key in seen_keys:
+            log(f"⚠ 重複スキャンを検出（無視）: 出席番号{group['s']:02d} 週{group['w']} "
+                f"seed={group['seed']} — {os.path.basename(group['files'][0])}")
+            continue
+        seen_keys.add(key)
+        deduped_groups.append(group)
+    exam_groups = deduped_groups
+
+    log(f"{len(exam_groups)}/{len(all_files)} 件の答案を認識"
+        f"（QR読取成功 {sum(1 for q in page_qr if q is not None)} 枚、続きページ含め {len(used)} 枚を使用）")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    plus_minus_nets, number_nets = None, None  # 遅延ロード
+
+    sheets = []
+    total = len(exam_groups)
+    for i, group in enumerate(sorted(exam_groups, key=lambda g: (g["s"], g["w"]))):
+        student_number, weeknum, seed = group["s"], group["w"], group["seed"]
+        division = "1st" if group["d"] == 0 else "2nd"
+        img_files = group["files"]
+
+        try:
+            week = course.week(weeknum, division)
+        except KeyError as e:
+            log(f"⚠ 週が特定できません（要手動確認）: 出席番号{student_number:02d} 週{weeknum} — {e}")
+            failed.append({
+                "student_number": student_number, "weeknum": weeknum,
+                "files": [os.path.basename(f) for f in img_files], "reason": str(e),
+            })
+            continue
+
+        wmod = import_week_module(course, week)
+        questions = wmod.MiniTest(seed=seed)
+        title = f"{weekstr_for(course, week)}　{week.weektitle}　再テスト"
+        metadata = _retry_metadata(course, week, student_number, seed, page_count=len(img_files))
+
+        result_dir = os.path.join(minitest_dir(tpath, course, week), "retry_batch_result")
+        os.makedirs(result_dir, exist_ok=True)
+
+        log(f"[{i + 1}/{total}] 採点: 出席番号{student_number:02d} 週{weeknum} seed={seed}")
+        try:
+            sh = Sheet(title, questions, monitor=monitor, metadata=metadata)
+            sh.path = img_files
+            sh.read()
+            sh.rotation()
+            sh.aliment()
+            sh.get_answerimg(namebox=True)
+
+            if plus_minus_nets is None:
+                log(f"  AI 推論（device={device}）")
+                plus_minus_nets, number_nets = load_ai_models(device, log=log)
+            sh.get_format_answers(plus_minus_nets, number_nets, device, result_dir=result_dir)
+            sh.save()
+            sh.scoring()
+        except Exception as e:  # noqa: BLE001 — 他の受験者の採点を続行するため広く捕捉
+            import traceback
+            log(f"‼ 採点エラー（他の受験者の採点は続行しますが、この受験者は未処理のまま"
+                f"残ります）: 出席番号{student_number:02d} 週{weeknum} — {e}")
+            log(traceback.format_exc())
+            failed.append({
+                "student_number": student_number, "weeknum": weeknum,
+                "files": [os.path.basename(f) for f in img_files], "reason": str(e),
+            })
+            continue
+
+        # 出席番号欄はQRと同じ値を事前印字しており、氏名欄のOCRは手書き数字用に
+        # 学習したモデルで印字文字を読むため誤読しうる（冗長チェックに過ぎない）。
+        # 学生の特定はQR側を正とする。
+        if sh.student_number != student_number:
+            log(f"  ⚠ 出席番号欄のOCR読み取り（{sh.student_number}）がQR（{student_number}）と"
+                f"不一致 → QRの値を採用します")
+            sh.student_number = student_number
+
+        log(f"  → 出席番号={sh.student_number} 得点={sh.score}")
+
+        if image_callback is not None:
+            try:
+                caption = f"番号{student_number:02d} 週{weeknum} {sh.score}点 ({i + 1}/{total})"
+                if sh.sheet:
+                    image_callback("scored", caption, sh.sheet[0].img)
+            except Exception as e:  # プレビュー失敗で採点を止めない
+                log(f"  （プレビュー生成スキップ: {e}）")
+
+        sheets.append(sh)
+
+    if failed:
+        log(f"‼‼‼ {len(failed)} 名が未処理のまま残っています（要手動対応） ‼‼‼")
+        for f in failed:
+            log(f"  - 出席番号{f['student_number']:02d} 週{f['weeknum']}: {f['reason']}"
+                f"（{', '.join(f['files'])}）")
+
+    return sheets, failed
 
 
 def aggregate_scores(sheets) -> dict:

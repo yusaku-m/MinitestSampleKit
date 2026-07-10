@@ -1324,6 +1324,38 @@ class Sheet():
                 #image.show(f"aliment except b{i}")
                 pass
 
+    def _mask_qr_region(self, gray_img, color_img):
+        """QRコードの外形が detect_squares に正方形として誤検出されるのを防ぐため、
+        QRコード領域を白で塗りつぶす。QRが見つからない場合は無変更で返す
+        （再・追テストのみ QR を埋め込むため、通常週の小テストには影響しない）。
+        """
+        points = None
+        try:
+            wechat = cv2.wechat_qrcode_WeChatQRCode()
+            _, points = wechat.detectAndDecode(color_img)
+        except Exception:
+            points = None
+
+        if not points:
+            try:
+                _, points = cv2.QRCodeDetector().detect(color_img)
+            except Exception:
+                points = None
+
+        if points is None or len(points) == 0:
+            return gray_img
+
+        masked = gray_img.copy()
+        for pts in points:
+            pts = np.array(pts).reshape(-1, 2)
+            x, y, w, h = cv2.boundingRect(pts.astype(np.int32))
+            margin = int(max(w, h) * 0.2)
+            x0 = max(0, x - margin); y0 = max(0, y - margin)
+            x1 = min(masked.shape[1], x + w + margin); y1 = min(masked.shape[0], y + h + margin)
+            masked[y0:y1, x0:x1] = 255
+
+        return masked
+
     def get_answerimg(self, namebox: bool = False):
         self.answer_squares = []; self.answer_imgs = []; squares = []
         #print(self.sheet)
@@ -1331,6 +1363,9 @@ class Sheet():
         for i, s in enumerate(self.sheet):
 
             img = cv2.cvtColor(s.img, cv2.COLOR_BGR2GRAY)
+
+            if i == 0 and namebox and self.metadata is not None:
+                img = self._mask_qr_region(img, s.img)
 
             squares += self.detect_squares(img, i, min_size_ratiotowidth=0.03, max_size_ratiotowidth=0.10, allow_different_size_ratio=0.1)
             #print(f"detect squares in sheet {i}: {len(squares)}")

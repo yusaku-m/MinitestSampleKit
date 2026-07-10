@@ -1,6 +1,7 @@
 output/
 __pycache__/
 *.pyc
+*.jpg
 .pixi/
 *.xlsx.lock
 ~$*.xlsx
