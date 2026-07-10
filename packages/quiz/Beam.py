@@ -926,25 +926,20 @@ class Beam():
                 if pos == sp.Rational(1, 2):
                     result = BEAM_REGISTRY["S_P_center"].delta_func(P, L, D)
                 else:
-                    a_ratio = pos if pos <= sp.Rational(1, 2) else (1 - pos)
-                    a = a_ratio * L
-                    b = (1 - a_ratio) * L
+                    a = pos * L
+                    b = L - a
                     result = BEAM_REGISTRY["S_P_a"].delta_func(P, L, a, b, D)
             elif isinstance(action, Action.DistributedLoad):
                 w0 = sp.symbols("w_0")
                 pos_start = to_sym(action._position_range[0])
                 pos_end = to_sym(action._position_range[1])
-                
+
                 if action.function == "1":
-                    # x=L/2でのたわみ
-                    # 0からx*Lまでの等分布荷重による中心でのたわみ: w0 * (xL)^2 * (3L^2 - 2(xL)^2) / (96D)  (x <= 1/2)
+                    # 0からx*Lまでの等分布荷重(S_w_b)による中央たわみの差分から，
+                    # 任意区間[pos_start*L, pos_end*L]の等分布荷重による中央たわみを求める
                     def f_center_delta(x_r):
-                        if x_r <= sp.Rational(1, 2):
-                            return w0 * (x_r * L)**2 * (3 * L**2 - 2 * (x_r * L)**2) / (96 * D)
-                        else:
-                            # 1/2から1までは、対称性より
-                            full_half = w0 * (L/2)**2 * (3*L**2 - 2*(L/2)**2) / (96 * D)
-                            return full_half + (full_half - f_center_delta(1 - x_r))
+                        a_r = x_r * L
+                        return BEAM_REGISTRY["S_w_b"].delta_func(w0, L, a_r, L - a_r, D)
 
                     result = f_center_delta(pos_end) - f_center_delta(pos_start)
                 elif pos_start == 0 and pos_end == 1:
@@ -957,15 +952,9 @@ class Beam():
                 Mc = sp.symbols(f"M_{idx}")
 
                 pos = to_sym(action.position)
-                rel_pos = pos if fixed_at_0 else (1 - pos)
-                a_fixed = rel_pos * L
-                a_free = L - a_fixed
-                
-                # CCW(Mc>0) at free end of cantilever (fixed at other end)
-                # If fixed at 0, Mc at L (CCW) -> upward deflection (negative)
-                # If fixed at L, Mc at 0 (CCW) -> downward deflection (positive)
-                res = BEAM_REGISTRY["C_M_a"].delta_func(Mc, L, a_free, D)
-                result = -res if fixed_at_0 else res
+                a = pos * L
+                b = L - a
+                result = BEAM_REGISTRY["S_M_a"].delta_func(Mc, L, a, b, D)
 
         elif case_type == "C_end":
             if fixed_at is not None:
@@ -1925,7 +1914,7 @@ class Beam():
         # 2回積分して一般解を作成
         for i in range(n_segments):
             (s_r, e_r), M_eq = segments[i]
-            self._explanation_deflection.append(f"==== 区間 ${sp.latex(sp.nsimplify(s_r*L))} < x < {sp.latex(sp.nsimplify(e_r*L))}$ ====")
+            self._explanation_deflection.append(f"==== 区間 ${sp.latex(sp.nsimplify(s_r*L))}$<$x$<${sp.latex(sp.nsimplify(e_r*L))}$ ====")
             
             # 1回目積分 (EI * v' = int(M) + C)
             slope_val = sp.nsimplify(sp.simplify(sp.integrate(-M_eq, x) + C[i]))
@@ -2008,7 +1997,7 @@ class Beam():
             self._slope.append(((s_r, e_r), slope_d))
             self._deflection.append(((s_r, e_r), deflection_d))
             
-            self._explanation_deflection.append(f"区間 ${sp.latex(sp.nsimplify(s_r*L))} < x < {sp.latex(sp.nsimplify(e_r*L))}$ のたわみ角曲線$i(x)$，たわみ曲線$y(x)$はそれぞれ，")
+            self._explanation_deflection.append(f"区間 ${sp.latex(sp.nsimplify(s_r*L))}$<$x$<${sp.latex(sp.nsimplify(e_r*L))}$ のたわみ角曲線$i(x)$，たわみ曲線$y(x)$はそれぞれ，")
             self._explanation_deflection.append(f"　$i(x) = {sp.latex(slope_d)}$")
             self._explanation_deflection.append(f"　$y(x) = {sp.latex(deflection_d)}$")
 

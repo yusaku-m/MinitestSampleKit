@@ -14,7 +14,7 @@ gui = "python sample_gui.py"
 opencv = ">=4.11.0,<5"
 pytorch = "*"
 torchvision = ">=0.21.0,<0.22"
-matplotlib = ">=3.10.1,<4"
+matplotlib = "==3.10.3"  # 3.11.0 は usetex+PDF埋め込みで一部グリフ（\left( や - 等）が欠落する回帰があるため固定
 numpy = ">=2.2.4,<3"
 svgwrite = ">=1.4.3,<2"
 svglib = ">=1.5.1,<2"
