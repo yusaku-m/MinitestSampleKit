@@ -15,10 +15,11 @@
 
 ## 使い方
 
-置いてある画像を、実際に採点対象になる場所へコピーする（初回は手動でよい）。
+GUIの「個別再テスト」タブで「QR一括採点（フォルダ自動振分）」ボタンを押すだけでよい。
+採点前に `scan_samples/*.jpg` の未コピー分が自動的に
 
 ```
-output/Sample_梁のたわみ計算（サンプル科目）/R8/minitest/1st/week01/scan/
+output/{科目}/{年度}/minitest/retry_scan/
 ```
 
-へ `scan_samples/*.jpg` をコピーしてから、GUIの「採点」ボタンを押す。
+へ取り込まれる（`packages/quiz/Runner.py` の `sync_scan_samples`）。手動コピーは不要。
