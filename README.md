@@ -22,20 +22,108 @@
 | 成績簿（Excel COM）転記・SharePoint配布 | **含まれない** | 学校固有の運用に強く依存するため意図的に省略（`仕様書.md` 参照） |
 | `scan_samples/` の解答用紙スキャン画像 | **本物** | 実際に印刷・記入・スキャンしたものを同梱済み |
 
-## 必要な環境
+## セットアップ（プログラミング未経験の方向け）
 
-- [pixi](https://pixi.sh/)
-- **LaTeX 環境**（MiKTeX（Windows）や TeX Live（Mac/Linux）等）
-  数式の解説（例: たわみの計算過程）を `matplotlib` の `usetex` 経由でレンダリングするため必須。
-  未インストールだと解説図の生成でエラーになる（問題文・採点自体は動く）。
-- 日本語フォント（Windows なら標準搭載の Meiryo で足りる。詳細は `packages/quiz/fonts/README.md`）
+Windows パソコンを想定した手順。所要時間の目安は30分〜1時間（LaTeXのダウンロードに時間がかかる場合あり）。
+コマンドは黒い（または青い）画面に文字を打ち込んで実行する「PowerShell」というアプリを使う。
+コピー&ペーストで進められるので、表示されたコマンドをそのまま貼り付けて Enter を押せばよい。
 
-## セットアップ
+### ステップ1: このリポジトリを手元に用意する
 
-```bash
-cd sample_kit
+**Gitを使ったことがない方（ZIPダウンロード）**
+
+1. ブラウザで https://github.com/yusaku-m/MinitestSampleKit を開く。
+2. 緑色の「Code」ボタン→「Download ZIP」をクリック。
+3. ダウンロードした zip ファイルを右クリック→「すべて展開」を選び、デスクトップなど
+   好きな場所に展開する。`MinitestSampleKit` フォルダができる。
+
+**Gitが使える方**
+
+```powershell
+git clone https://github.com/yusaku-m/MinitestSampleKit.git
+```
+
+### ステップ2: フォルダを開いた状態で PowerShell を起動する
+
+エクスプローラーで `MinitestSampleKit` フォルダを開き、フォルダの中の何もない場所を
+**Shift + 右クリック**し、「PowerShell ウィンドウをここに開く」（Windows 11 では
+「ターミナルで開く」）を選ぶ。これ以降のコマンドはすべてこの画面に打ち込む。
+
+（この操作を忘れて別の場所で PowerShell を開いてしまった場合は、`cd` の後に
+フォルダのパスを貼り付ければ移動できる。例: `cd C:\Users\名前\Desktop\MinitestSampleKit`）
+
+### ステップ3: pixi をインストールする
+
+pixi は、Pythonや必要なライブラリを自動で用意してくれる管理ツール。次のコマンドを
+コピーして貼り付け、Enter を押す。
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm -useb https://pixi.sh/install.ps1 | iex"
+```
+
+数十秒でインストールが終わる。**終わったら、開いている PowerShell を一度閉じて、
+ステップ2の要領で開き直す**（インストールしたことをこのアプリに認識させるため）。
+
+開き直したら、うまく入ったか次のコマンドで確認する。
+
+```powershell
+pixi --version
+```
+
+`pixi 0.xx.x` のようにバージョン番号が表示されれば成功。
+（`'pixi' は、内部コマンドまたは外部コマンド...として認識されていません` と出る場合は、
+PowerShell を閉じて開き直せているか確認する）
+
+### ステップ4: LaTeX（MiKTeX）をインストールする
+
+数式の解説図（たわみの計算過程など）を作るのに使う。無くても問題文の生成・採点自体は
+動くが、あとで解説図のところだけエラーになるので、先に入れておくのがおすすめ。
+
+1. https://miktex.org/download を開く。
+2. 「Basic MiKTeX Installer」の 64-bit 版をダウンロードして実行する。
+3. インストーラの指示にしたがって進める（基本はすべて既定値のままで問題ない）。
+   「Install missing packages on-the-fly」（未インストールのパッケージを自動で
+   追加するか）を聞かれたら「Yes」を選んでおくと、あとで数式を使うたびに
+   手動でパッケージを探す手間がなくなる。
+
+日本語フォントは Windows 標準の Meiryo で足りるため、追加の作業は不要
+（詳細は `packages/quiz/fonts/README.md`）。
+
+### ステップ5: 必要なライブラリをまとめてインストールする
+
+ステップ2の要領で、`MinitestSampleKit` フォルダで PowerShell を開き（すでに開いている
+場合はそのままでよい）、次のコマンドを実行する。
+
+```powershell
 pixi install
 ```
+
+Python本体や、AI認識に使う PyTorch・OpenCV などのライブラリが自動でダウンロードされる。
+初回は数分〜十数分かかることがある（進捗が表示されるので、止まっているように見えても
+そのまま待つ）。
+
+### ステップ6: GUIを起動する
+
+同じ画面で次を実行する。
+
+```powershell
+pixi run python sample_gui.py
+```
+
+「ランダム問題生成 × 自動採点 サンプルGUI」というウィンドウが立ち上がれば成功。
+以降の操作は下の「使い方（GUI）」を参照。
+
+### うまくいかないときは
+
+- `pixi : 用語 'pixi' は...認識されません` → ステップ3のあとに PowerShell を
+  閉じて開き直したか確認する。
+- 解説図の生成でLaTeX関連のエラーが出る → ステップ4のMiKTeXが入っているか確認する。
+  MiKTeXは初回、数式に必要なパッケージをその都度自動ダウンロードするため、
+  ネット接続と数分の待ち時間が必要になることがある。
+- 上記以外のエラーが出た場合は、画面に表示された文字（特に赤字の部分）をそのまま
+  コピーして、詳しい人に質問するとよい。
+
+---
 
 `SampleCourse/2026/config.xlsx` は同梱済み（`SampleCourse/make_config.py` で生成したもの）。
 週番号・使う `weekN.py`・実施日（＝乱数シード）を管理している。Excel で直接開いて日付を
