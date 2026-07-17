@@ -25,6 +25,7 @@ import datetime as dt
 import glob
 import importlib.util
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
@@ -36,6 +37,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 # 生成物の置き場所（OneDrive の代わり）。すべてこのフォルダ配下に閉じる。
 OUTPUT_ROOT = os.path.join(REPO_ROOT, "output")
+
+# 同梱の実スキャン画像置き場。QR一括採点時にここから retry_scan へ自動コピーする。
+SCAN_SAMPLES_DIR = os.path.join(REPO_ROOT, "scan_samples")
 
 # コースフォルダ名 → 科目名（日本語表示用）。英語フォルダ名からは導けないためここで対応付ける。
 # 新しい科目を追加するときはここに 1 行足すだけでよい。
@@ -640,6 +644,27 @@ def retry_batch_scan_dir(tpath: str) -> str:
     return scan
 
 
+def sync_scan_samples(scan_dir: str, log: LogFn = print) -> int:
+    """同梱の scan_samples/*.jpg を retry_scan フォルダへコピーする（未コピー分のみ）。
+
+    scan_samples はデモ用に実際の解答用紙スキャンを同梱したものだが、そのままでは
+    採点対象フォルダに存在せず「置いてあるのに採点されない」状態になってしまう。
+    QR一括採点は学生ごとの仕分けが不要という前提なので、ここで自動的に取り込む。
+    Returns: コピーした枚数
+    """
+    if not os.path.isdir(SCAN_SAMPLES_DIR):
+        return 0
+    copied = 0
+    for src in sorted(glob.glob(os.path.join(SCAN_SAMPLES_DIR, "*.jpg"))):
+        dst = os.path.join(scan_dir, os.path.basename(src))
+        if os.path.exists(dst):
+            continue
+        shutil.copy2(src, dst)
+        log(f"scan_samples から取り込み: {os.path.basename(src)}")
+        copied += 1
+    return copied
+
+
 def grade_retry_batch(
     course: Course, tpath: Optional[str] = None, log: LogFn = print,
     monitor: bool = False, image_callback=None,
@@ -651,6 +676,8 @@ def grade_retry_batch(
     （元リポジトリ Grading の grading_app.py: grade_retry() と同じ考え方。Excel成績簿転記・
     SharePoint配布など学校固有の運用は対象外）。
 
+    採点前に scan_samples/ の同梱画像を retry_scan へ自動で取り込む（sync_scan_samples）。
+
     1件の採点エラーで全体を止めず、失敗は failed に集めて返す（呼び出し側で必ず提示すること）。
     Returns: (sheets, failed)
     """
@@ -660,6 +687,7 @@ def grade_retry_batch(
         tpath = target_path(course)
     Sheet = _sheet_cls()
     scan_dir = retry_batch_scan_dir(tpath)
+    sync_scan_samples(scan_dir, log=log)
 
     all_files = sorted(glob.glob(os.path.join(scan_dir, "*.jpg")))
     log(f"スキャンフォルダ: {scan_dir}")

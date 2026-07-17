@@ -1266,6 +1266,20 @@ class Sheet():
             # 変換前の座標を指定（例: 四角形の頂点）
             src_points = src_points_list[i]
 
+            # マーカー検出数が期待数と一致しないまま進めると、後段の最近傍点マッチング
+            # （307行下）が誤対応してホモグラフィが大きく歪み、症状が全く違う場所
+            # （detect_squares の「Infinite loop」等）で発覚する。ここで早期に検出する。
+            expected_n = len(self.marker_positions)
+            if len(src_points) != expected_n:
+                src_path = os.path.basename(self.path[i]) if self.path else "?"
+                raise RuntimeError(
+                    f"基準マーカーが{len(src_points)}点しか検出できませんでした（期待{expected_n}点）。"
+                    f" ファイル: {src_path}。"
+                    " スキャン画像の四隅・右下付近のマーカー（黒塗り四角）に汚れ・かすれ・折れ・影、"
+                    "または印刷不良（塗りつぶしが薄い/斑点状になっていて黒一色でない）がないか確認し、"
+                    "可能なら再スキャン（またはそのマーカー付近を再印刷）してください。"
+                )
+
             # 取得した基準座標に合わせてトリミング
             req_height = self.marker_size / self.sheet_size[1] * height
             req_width = self.marker_size / self.sheet_size[0] * width
@@ -1581,15 +1595,28 @@ class Sheet():
 
         df = pd.concat(df)
 
+        def _slice_or_raise(qnum, anum, j, mode):
+            sub = df[(df["Question_Number"] == qnum) & (df["Answer_Number"] == anum)
+                     & (df["Image_Index"] == j) & (df["Predict_Mode"] == mode)]
+            if len(sub) == 0:
+                raise RuntimeError(
+                    f"predictions.csv に該当する予測結果が見つかりません "
+                    f"(Question_Number={qnum}, Answer_Number={anum}, Image_Index={j}, Predict_Mode={mode!r})。"
+                    f" 対象ファイル: {[os.path.basename(p) for p in self.path]}。"
+                    " 検出された解答欄の数が問題数と一致していない可能性があります"
+                    "（スキャン画像の一部が不足／ページが正しく認識されていない等）。"
+                )
+            return sub
+
         format_answers = []
-        
+
         texts = ""
         pred = []
         # 出席番号の取得'
         for d in range(2):
 
             #textに予測結果を追加
-            ddf = df[(df["Question_Number"] == 0) & (df["Answer_Number"] == 0) & (df["Image_Index"] == d) & (df["Predict_Mode"] == "number")]
+            ddf = _slice_or_raise(0, 0, d, "number")
             text = str(ddf["Corrected"].values[0])
 
             if text == "10":
@@ -1629,7 +1656,7 @@ class Sheet():
 
                     with torch.no_grad():
                         if j % split_position == 0:
-                            preddf = df[(df["Question_Number"] == qnum+1) & (df["Answer_Number"] == anum+1) & (df["Image_Index"] == j) & (df["Predict_Mode"] == "plusminus")]
+                            preddf = _slice_or_raise(qnum+1, anum+1, j, "plusminus")
                             pred.append(preddf["Corrected"].values[0])
                             
                             if pred[-1] == 0:
@@ -1641,7 +1668,7 @@ class Sheet():
 
                         if j % split_position >= 1:
                             ##print(number_model_instance(norm_img))
-                            preddf = df[(df["Question_Number"] == qnum+1) & (df["Answer_Number"] == anum+1) & (df["Image_Index"] == j) & (df["Predict_Mode"] == "number")]
+                            preddf = _slice_or_raise(qnum+1, anum+1, j, "number")
                             pred.append(preddf["Corrected"].values[0])
 
                             if pred[-1] == 10:  # 空欄の場合
@@ -1724,6 +1751,7 @@ class Sheet():
     def detect_squares(self, img, sheetnum, min_size_ratiotowidth, max_size_ratiotowidth, allow_different_size_ratio):
 
         bold = 1
+        attempts = []  # 各boldでの検出数（失敗時の原因調査用）
         while True:
 
             width = img.shape[1]; height = img.shape[0]
@@ -1761,6 +1789,8 @@ class Sheet():
 
             # 大きさがmin_size以上の正方形を抽出
             squares = []
+            # サイズ・位置のどちらかは満たすが正方形とは認められなかった候補（原因調査用）
+            near_misses = []
 
             ##print("contours:", len(contours))
 
@@ -1771,12 +1801,20 @@ class Sheet():
                 #print("min_size, max_size:", min_size, max_size)
                 #print("w-h/w, allow_different_size_ratio:", abs(w-h)/w, allow_different_size_ratio)
 
-                if w > min_size and h > min_size and w < max_size and h < max_size and abs(w-h)/w < allow_different_size_ratio and ((x < width*0.7 and y < height*0.9) or y < height*0.1) :
+                size_ok = w > min_size and h > min_size and w < max_size and h < max_size and abs(w-h)/w < allow_different_size_ratio
+                position_ok = (x < width*0.7 and y < height*0.9) or y < height*0.1
+
+                if size_ok and position_ok:
                     squares.append((sheetnum, x, y, w, h))
                     ##print("squares:", len(squares))
+                elif size_ok or position_ok:
+                    # サイズか位置のどちらか一方だけ満たす惜しい候補。デバッグ画像で強調表示する。
+                    near_misses.append((x, y, w, h, size_ok, position_ok))
 
             #cv2.imshow("img_bin", img_bin)
             #cv2.waitKey(0)
+
+            attempts.append({"bold": bold, "found": len(squares), "contours": len(contours)})
 
             if sheetnum == 0 and (len(squares) -2) % 6 == 0:
                 break
@@ -1786,11 +1824,69 @@ class Sheet():
             bold += 1
 
             if bold > 10:
-                raise ValueError(f"Error: Infinite loop detected in get_square, sheetnum:{sheetnum}")
+                src = None
+                if self.path and sheetnum < len(self.path):
+                    src = self.path[sheetnum]
 
+                attempts_str = ", ".join(f"bold={a['bold']}:{a['found']}個(輪郭{a['contours']}個中)" for a in attempts)
+                squares_str = ", ".join(f"(x={x},y={y},w={w},h={h})" for _, x, y, w, h in squares)
+                expected = "2 + 6の倍数" if sheetnum == 0 else "6の倍数"
 
+                debug_path = self._save_square_debug_image(img_bin, squares, near_misses, sheetnum, src)
+
+                raise ValueError(
+                    f"Error: Infinite loop detected in get_square, sheetnum:{sheetnum}\n"
+                    f" ファイル: {os.path.basename(src) if src else '?'}\n"
+                    f" 期待する検出数: {expected} （実際は {len(squares)}）\n"
+                    f" bold(モルフォロジーのカーネル幅)ごとの検出数: {attempts_str}\n"
+                    f" しきい値: min_size={min_size}px, max_size={max_size}px"
+                    f"（画像幅{width}pxに対する比 {min_size_ratiotowidth}〜{max_size_ratiotowidth}）\n"
+                    f" 最後の試行(bold={bold-1})で検出した正方形: [{squares_str}]\n"
+                    + (f" デバッグ画像を保存しました: {debug_path}\n" if debug_path else "")
+                    + " スキャン画像の解答欄付近の汚れ・折れ・書き込み・影がないか確認してください"
+                    "（デバッグ画像で緑=採用された正方形、黄=サイズのみ条件を満たした候補、"
+                    "水色=位置のみ条件を満たした候補）。"
+                )
 
         return squares
+
+    def _save_square_debug_image(self, img_bin, squares, near_misses, sheetnum, src_path):
+        """detect_squares が失敗したときに、検出状況を可視化した画像を保存する（原因調査用）。
+
+        保存に失敗しても採点の失敗理由自体は分かるように、例外は握りつぶしてNoneを返す。
+        """
+        try:
+            vis = cv2.cvtColor(img_bin, cv2.COLOR_GRAY2BGR)
+
+            for _, x, y, w, h in squares:
+                cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+            for x, y, w, h, size_ok, position_ok in near_misses:
+                # サイズ条件のみ満たす候補は黄、位置条件のみ満たす候補は水色
+                color = (0, 255, 255) if size_ok else (255, 255, 0)
+                cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(vis, f"{w}x{h}", (x, max(0, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
+
+            if src_path:
+                scan_dir = os.path.dirname(src_path)
+                wdir = os.path.dirname(scan_dir)
+                debug_dir = os.path.join(wdir, "result", "debug")
+                basename = os.path.splitext(os.path.basename(src_path))[0]
+            else:
+                debug_dir = "./files/result/debug"
+                basename = "unknown"
+
+            os.makedirs(debug_dir, exist_ok=True)
+            out_path = os.path.join(debug_dir, f"{basename}_sheet{sheetnum}_squares_debug.png")
+            # cv2.imwrite は全角パスを渡すと例外を出さずに失敗する（packages/CLAUDE.md参照）。
+            # imencode + ndarray.tofile はPython側のファイルI/Oを使うため全角パスでも安全。
+            ok, buf = cv2.imencode(".png", vis)
+            if not ok:
+                return None
+            buf.tofile(out_path)
+            return out_path
+        except Exception:
+            return None
 
     def normalize_images(self, images, threshold=0.2):
         """
@@ -1833,17 +1929,35 @@ class Sheet():
         #self.result.to_csv(f"./files/result/csv/{filename}.csv")
 
 
+    def normalize_stroke_width(self, thresh_img, target_width=2, blur_sigma=0.8):
+        """
+        線の太さをMNIST風に統一する。
+        芯線化 → 一定太さで再膨張 → 軽いガウスぼかしでアンチエイリアス。
+        """
+        skeleton = cv2.ximgproc.thinning(thresh_img)
+        if skeleton.sum() == 0 and thresh_img.sum() != 0:
+            # 線が細すぎる/小さすぎて芯線化で消えた場合は元の二値画像にフォールバック
+            skeleton = thresh_img
+
+        ksize = max(1, target_width)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize * 2 + 1, ksize * 2 + 1))
+        dilated = cv2.dilate(skeleton, kernel)
+
+        return cv2.GaussianBlur(dilated, (0, 0), blur_sigma)
+
     def image_preprocess(self, img):
         """
         画像の前処理を行う。
-        空欄検知ロジック + 大津の二値化。
+        空欄検知ロジック + 大津の二値化 + 線の太さ統一。
         """
         # 青チャンネルを使用
         blue_img = img[:, :, 0]
 
-
         # --- 大津の二値化 ---
         _, thresh_img = cv2.threshold(blue_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # --- 線の太さをMNIST風に統一 ---
+        thresh_img = self.normalize_stroke_width(thresh_img)
 
         # --- 重心（モーメント）によるセンタリング ---
         M = cv2.moments(thresh_img)
