@@ -26,6 +26,35 @@ import packages.quiz.Runner as R
 from packages.quiz.CorrectionUI import CorrectionWindow
 
 
+def _ensure_dpi_awareness():
+    """tk.Tk() 生成前に呼ぶ。プロセスをDPI awareにし、GetDpiForSystem()が
+    実際のWindows「拡大縮小」設定を返すようにする（未設定だと常に96=100%を返す）。
+    grading本体（grading_app.py）と同じ方式。これを呼ばないとWindowsが
+    ウィンドウをビットマップ拡大縮小し、モニタ切り替え等でスケールが
+    不安定に見える。"""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except Exception:
+        pass  # 実行ファイルのマニフェスト等で既に設定済みの場合は失敗するが無視してよい
+
+
+def _detect_os_scale_factor() -> float:
+    """現在の端末のWindows「拡大縮小」設定を1.0=100%として返す。
+    取得できない場合は100%（1.0）にフォールバックする。"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            dpi = ctypes.windll.user32.GetDpiForSystem()
+            if dpi:
+                return dpi / 96.0
+        except Exception:
+            pass
+    return 1.0
+
+
 class _TeeQueue:
     """print() の内容をキュー経由で GUI ログへ流すためのラッパー。"""
 
@@ -37,11 +66,11 @@ class _TeeQueue:
 
 
 class SampleGradingApp:
-    UI_SCALE = 1.3
-
     def __init__(self, root: tk.Tk):
         self.root = root
+        self.UI_SCALE = _detect_os_scale_factor()
         self.root.title("ランダム問題生成 × 自動採点 サンプルGUI")
+        self.root.geometry(f"{int(900 * self.UI_SCALE)}x{int(650 * self.UI_SCALE)}")
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.preview_queue: "queue.Queue[tuple]" = queue.Queue()
         self.courses: list[R.Course] = []
@@ -281,7 +310,7 @@ class SampleGradingApp:
     def _open_correction(self, result_dir: str, scan_dirs: list, title: str) -> None:
         """予測修正ウィンドウを開く（生成に失敗した場合は自壊するので ok を見るだけでよい）。"""
         CorrectionWindow(self.root, result_dir, scan_dirs=scan_dirs, title=title,
-                          ui_scale=1.0, log=self._log)
+                          ui_scale=self.UI_SCALE, log=self._log)
 
     # ------------------------------------------------------------------ #
     # 個別再テスト タブの処理
@@ -381,9 +410,9 @@ class SampleGradingApp:
 
 
 def main():
+    _ensure_dpi_awareness()
     root = tk.Tk()
-    app = SampleGradingApp(root)
-    root.geometry("900x650")
+    SampleGradingApp(root)
     root.mainloop()
 
 
